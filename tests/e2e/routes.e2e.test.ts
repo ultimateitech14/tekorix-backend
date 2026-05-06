@@ -427,7 +427,7 @@ async function runMigrations(connectionString: string) {
 
 async function createTemporaryWorkspace() {
   temporaryRootDir = await mkdtemp(path.join(os.tmpdir(), "startupwork-e2e-"));
-  temporaryBackendDir = path.join(temporaryRootDir, "backend", "express-api");
+  temporaryBackendDir = path.join(temporaryRootDir, "backend");
   temporaryFrontendDir = path.join(temporaryRootDir, "frontend", "data");
 
   await mkdir(path.join(temporaryBackendDir, "public"), { recursive: true });

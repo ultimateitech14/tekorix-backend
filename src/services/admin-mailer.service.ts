@@ -212,7 +212,7 @@ export async function sendAdminEmail(input: SendAdminEmailInput) {
   if (!nodemailer) {
     return {
       sent: false,
-      error: "Nodemailer runtime is not available for express-api.",
+      error: "Nodemailer runtime is not available for backend.",
     } as const;
   }
 

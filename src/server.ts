@@ -12,11 +12,11 @@ function isNodeError(value: unknown): value is NodeJS.ErrnoException {
 
 function formatStartupError(error: unknown) {
   if (isNodeError(error) && error.code === "EADDRINUSE") {
-    return `Port ${env.PORT} is already in use. Stop the existing process or change PORT in backend/express-api/.env.`;
+    return `Port ${env.PORT} is already in use. Stop the existing process or change PORT in backend/.env.`;
   }
 
   if (isNodeError(error) && error.code === "EACCES") {
-    return `Port ${env.PORT} requires elevated permissions. Change PORT in backend/express-api/.env.`;
+    return `Port ${env.PORT} requires elevated permissions. Change PORT in backend/.env.`;
   }
 
   return "Express API startup failed.";

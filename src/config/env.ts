@@ -9,11 +9,66 @@ function emptyStringToUndefined(value: unknown) {
 
 const optionalStringSchema = z.preprocess(emptyStringToUndefined, z.string().trim().min(1).optional());
 const optionalUrlSchema = z.preprocess(emptyStringToUndefined, z.string().trim().url().optional());
+const placeholderValues = new Set(["host", "user", "username", "password", "dbname", "database"]);
+
+const databaseUrlSchema = z.string().trim().min(1, "DATABASE_URL is required.").superRefine((value, ctx) => {
+  let parsedUrl: URL;
+
+  try {
+    parsedUrl = new URL(value);
+  } catch {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "DATABASE_URL must be a valid PostgreSQL connection string.",
+    });
+    return;
+  }
+
+  if (!["postgres:", "postgresql:"].includes(parsedUrl.protocol)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "DATABASE_URL must start with postgres:// or postgresql://.",
+    });
+  }
+
+  const hostname = parsedUrl.hostname.trim().toLowerCase();
+  const username = parsedUrl.username.trim().toLowerCase();
+  const password = decodeURIComponent(parsedUrl.password).trim().toLowerCase();
+  const databaseName = parsedUrl.pathname.replace(/^\/+/, "").trim().toLowerCase();
+
+  if (placeholderValues.has(hostname)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "DATABASE_URL still contains a placeholder host. Replace HOST with the real database hostname.",
+    });
+  }
+
+  if (placeholderValues.has(username)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "DATABASE_URL still contains a placeholder username. Replace USER with the real database user.",
+    });
+  }
+
+  if (placeholderValues.has(password)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "DATABASE_URL still contains a placeholder password. Replace PASSWORD with the real database password.",
+    });
+  }
+
+  if (placeholderValues.has(databaseName)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "DATABASE_URL still contains a placeholder database name. Replace DBNAME with the real database name.",
+    });
+  }
+});
 
 const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(4001),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  DATABASE_URL: z.string().trim().min(1, "DATABASE_URL is required."),
+  DATABASE_URL: databaseUrlSchema,
   JWT_SECRET: z
     .string()
     .trim()
