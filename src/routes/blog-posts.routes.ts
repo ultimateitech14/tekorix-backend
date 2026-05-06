@@ -18,6 +18,12 @@ import { createAdminAuditEntry } from "../lib/shared-admin-store.js";
 import { requireAdminAuth } from "../middleware/auth.middleware.js";
 
 const blogPostsRoutes = Router();
+const optionalDescriptionSchema = z
+  .string()
+  .trim()
+  .refine((value) => value.length === 0 || value.length >= 10, {
+    message: "Description should be at least 10 characters when provided.",
+  });
 
 const blogPostSectionSchema = z.object({
   heading: z.string().trim().min(2, "Section heading is required."),
@@ -31,7 +37,7 @@ const blogPostPayloadSchema = z.object({
   date: z.string().trim().min(3, "Date label is required."),
   readTime: z.string().trim().min(3, "Read time is required."),
   title: z.string().trim().min(8, "Title is required."),
-  description: z.string().trim().min(12, "Description is required."),
+  description: optionalDescriptionSchema,
   coverImage: z.string().trim().min(1, "Cover image is required."),
   coverAlt: z.string().trim().min(3, "Cover alt text is required."),
   intro: z.string().trim().min(20, "Intro should be at least 20 characters."),

@@ -115,12 +115,12 @@ function buildTransportFromSettings(input: SendAdminEmailInput): MailerTransport
   const credential = input.settings?.notificationEmailApiKey?.trim() ?? "";
   const normalizedProvider = provider.toLowerCase();
 
-  if (!provider || !credential) {
-    return null;
-  }
-
   if (normalizedProvider.startsWith("smtp://") || normalizedProvider.startsWith("smtps://")) {
     return provider;
+  }
+
+  if (!provider || !credential) {
+    return null;
   }
 
   const credentialPair = parseCredentialPair(credential);

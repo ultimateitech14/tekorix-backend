@@ -4,9 +4,9 @@ import { listCandidateLeadsService } from "../modules/candidate-leads/candidate-
 import { listCompanyLeadsService } from "../modules/company-leads/company-leads.service.js";
 import { readContactSubmissions } from "../lib/admin-contact-submissions-store.js";
 import { readJobApplications } from "../lib/admin-job-applications-store.js";
+import { getAdminJobsMetadata } from "../lib/admin-jobs-store.js";
 import { asyncHandler } from "../lib/async-handler.js";
 import { sendSuccess } from "../lib/api-response.js";
-import { readJobs } from "../lib/shared-admin-store.js";
 import { requireAdminAuth } from "../middleware/auth.middleware.js";
 
 const dashboardRoutes = Router();
@@ -62,8 +62,8 @@ dashboardRoutes.get(
   "/api/admin/dashboard",
   requireAdminAuth(),
   asyncHandler(async (_request, response) => {
-    const [jobs, applications, contactSubmissions, companyLeadsResult, candidateLeadsResult] = await Promise.all([
-      readJobs(),
+    const [jobMetadata, applications, contactSubmissions, companyLeadsResult, candidateLeadsResult] = await Promise.all([
+      getAdminJobsMetadata(),
       readJobApplications(),
       readContactSubmissions(),
       listCompanyLeadsService().then(
@@ -92,10 +92,10 @@ dashboardRoutes.get(
       message: "Dashboard data fetched successfully.",
       data: {
         kpis: {
-          totalJobs: jobs.length,
-          publishedJobs: jobs.filter((item) => item.status === "published").length,
-          draftJobs: jobs.filter((item) => item.status === "draft").length,
-          closedJobs: jobs.filter((item) => item.status === "closed").length,
+          totalJobs: jobMetadata.totalJobs,
+          publishedJobs: jobMetadata.publishedJobs,
+          draftJobs: jobMetadata.draftJobs,
+          closedJobs: jobMetadata.closedJobs,
           totalApplications: applications.length,
           unreadApplications: applications.filter((item) => !item.isRead).length,
           shortlistedApplications: statusCounts.shortlisted,

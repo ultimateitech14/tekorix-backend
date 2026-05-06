@@ -52,7 +52,7 @@ function normalizeRecord(value: unknown): CompanyLeadRecord | null {
   const phone = trimToString(item.phone);
   const message = trimToString(item.message);
 
-  if (!id || !name || !companyName || !email || !phone || !message) {
+  if (!id || !name || !companyName || !email || !phone) {
     return null;
   }
 

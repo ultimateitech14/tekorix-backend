@@ -1,7 +1,9 @@
 import { Router } from "express";
+import { z } from "zod";
 
 import {
   addContactSubmissionReply,
+  createContactSubmission,
   deleteAllContactSubmissions,
   deleteContactSubmission,
   getContactSubmissionById,
@@ -16,9 +18,75 @@ import { createAdminAuditEntry, readSiteSettings } from "../lib/shared-admin-sto
 import { requireAdminAuth } from "../middleware/auth.middleware.js";
 import { env } from "../config/env.js";
 import { sendAdminEmail } from "../services/admin-mailer.service.js";
+import { sendTemplateDrivenEmail } from "../services/admin-template-email.service.js";
 
 const contactSubmissionsRoutes = Router();
 const defaultFromEmail = env.ADMIN_EMAIL;
+const publicContactSubmissionSchema = z.object({
+  inquiryType: z.string().trim().min(1, "Please select who you are."),
+  firstName: z.string().trim().min(2, "First name is required.").max(40, "First name is too long."),
+  lastName: z.string().trim().min(2, "Last name is required.").max(40, "Last name is too long."),
+  email: z.string().trim().email("Please enter a valid email address."),
+  country: z.string().trim().min(1, "Please select a country."),
+  industry: z.string().trim().min(1, "Please select an industry."),
+  company: z.string().trim().min(2, "Company is required.").max(80, "Company is too long."),
+  position: z.string().trim().min(2, "Position is required.").max(60, "Position is too long."),
+  phonePrefix: z.string().trim().min(1, "Please select a phone prefix."),
+  phoneNumber: z.string().trim().min(6, "Phone number is required.").max(14, "Phone number is too long."),
+  message: z.string().trim().min(15, "Please enter at least 15 characters in your message.").max(500, "Message must be 500 characters or less."),
+});
+
+contactSubmissionsRoutes.post(
+  "/api/v1/contact-submissions",
+  asyncHandler(async (request, response) => {
+    const parsed = publicContactSubmissionSchema.safeParse(request.body);
+
+    if (!parsed.success) {
+      throw new AppError(400, parsed.error.issues[0]?.message ?? "Invalid request payload.");
+    }
+
+    const item = await createContactSubmission(parsed.data);
+    try {
+      const settings = await readSiteSettings();
+      const fromEmail = settings.notificationFromEmail.trim() || settings.companyEmail.trim() || defaultFromEmail;
+      const autoReply = await sendTemplateDrivenEmail({
+        templateId: settings.notificationTemplateMappings.contactSubmissionAcknowledgementTemplateId,
+        settings,
+        toEmail: item.email,
+        fromEmail,
+        replacements: {
+          candidate_name: item.firstName,
+          first_name: item.firstName,
+          last_name: item.lastName,
+          full_name: `${item.firstName} ${item.lastName}`.trim(),
+          inquiry_type: item.inquiryType,
+          company_name: settings.companyName,
+          company_email: settings.companyEmail,
+          recruiter_name: env.ADMIN_NAME?.trim() || `${settings.companyName} Team`.trim(),
+        },
+      });
+
+      if (!autoReply.skipped) {
+        await createAdminAuditEntry({
+          category: "notification",
+          module: "Email & Notifications",
+          action: autoReply.sent ? "Sent Contact Submission Auto Reply" : "Failed Contact Submission Auto Reply",
+          target: `${item.id} - ${autoReply.template.id} -> ${item.email} -> ${autoReply.sent ? "sent" : "failed"}`,
+        });
+      }
+    } catch {
+      // Do not block public form submissions if the acknowledgement email fails unexpectedly.
+    }
+
+    sendSuccess(response, {
+      status: 201,
+      message: "Thanks. Your request has been received and our team will follow up shortly.",
+      data: {
+        id: item.id,
+      },
+    });
+  }),
+);
 
 contactSubmissionsRoutes.get(
   "/api/admin/contact-submissions",

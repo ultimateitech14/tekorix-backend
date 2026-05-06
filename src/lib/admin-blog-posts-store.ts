@@ -324,7 +324,7 @@ function normalizeFallbackBlogPost(value: unknown): AdminBlogPostRecord | null {
   const intro = trimToString(item.intro);
   const sections = normalizeSections(item.sections);
 
-  if (!id || !slug || !category || !date || !readTime || !title || !description || !coverImage || !coverAlt || !intro || !sections.length) {
+  if (!id || !slug || !category || !date || !readTime || !title || !coverImage || !coverAlt || !intro || !sections.length) {
     return null;
   }
 

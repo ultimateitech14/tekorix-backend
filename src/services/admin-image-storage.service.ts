@@ -1,8 +1,8 @@
-import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { AppError } from "../lib/app-error.js";
+import { assertManagedMediaStorageConfigured, putR2Object } from "./r2-storage.service.js";
 
 export type AdminImageUploadFolder = "blog" | "team" | "profiles";
 
@@ -14,8 +14,6 @@ const SUPPORTED_IMAGE_TYPES = new Map<string, string>([
   ["image/gif", ".gif"],
   ["image/avif", ".avif"],
 ]);
-
-const uploadRootDir = path.resolve(process.cwd(), "public", "uploads", "admin");
 
 function slugify(value: string) {
   return value
@@ -75,18 +73,23 @@ export async function saveAdminImageUpload(input: {
   fileName: string;
   dataUrl: string;
 }) {
-  const { extension, fileBuffer } = parseImageDataUrl(input.dataUrl);
+  assertManagedMediaStorageConfigured("Cloudflare R2 media storage is not configured for admin images.");
+
+  const { contentType, extension, fileBuffer } = parseImageDataUrl(input.dataUrl);
   const folderSegment = getFolderSegment(input.folder);
   const originalStem = path.parse(input.fileName).name;
   const safeStem = slugify(originalStem) || folderSegment;
   const storedFileName = `${Date.now()}-${safeStem}-${randomUUID().slice(0, 8)}${extension}`;
-  const targetDirectory = path.join(uploadRootDir, folderSegment);
-  const absoluteFilePath = path.join(targetDirectory, storedFileName);
+  const objectKey = path.posix.join("uploads", "admin", folderSegment, storedFileName);
 
-  await mkdir(targetDirectory, { recursive: true });
-  await writeFile(absoluteFilePath, fileBuffer);
+  await putR2Object({
+    objectKey,
+    contentType,
+    body: fileBuffer,
+    cacheControl: "public, max-age=31536000, immutable",
+  });
 
   return {
-    path: `/uploads/admin/${folderSegment}/${storedFileName}`,
+    path: `/${objectKey}`,
   };
 }

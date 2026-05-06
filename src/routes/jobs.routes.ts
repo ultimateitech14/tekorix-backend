@@ -20,8 +20,14 @@ import { requireAdminAuth } from "../middleware/auth.middleware.js";
 
 const jobsRoutes = Router();
 
-const jobTypeSchema = z.enum(["full-time", "part-time", "contract"]);
+const jobTypeSchema = z.string().trim().min(2, "Job type is required.").max(80, "Job type is too long.");
 const jobStatusSchema = z.enum(["draft", "published", "closed"]);
+const optionalDescriptionSchema = z
+  .string()
+  .trim()
+  .refine((value) => value.length === 0 || value.length >= 10, {
+    message: "Description should be at least 10 characters when provided.",
+  });
 
 const jobPayloadSchema = z.object({
   title: z.string().trim().min(3, "Title is required."),
@@ -29,11 +35,11 @@ const jobPayloadSchema = z.object({
   country: z.string().trim().min(2, "Country is required."),
   city: z.string().trim().min(2, "City is required."),
   location: z.string().trim().min(2, "Location is required."),
-  experience: z.string().trim().min(2, "Experience is required."),
+  experience: z.string().trim().min(1, "Experience is required."),
   type: jobTypeSchema,
   salaryRange: z.string().trim().max(80, "Salary range is too long.").optional().default(""),
   skills: z.array(z.string().trim().min(1, "Skill cannot be empty.")).max(20).optional().default([]),
-  description: z.string().trim().min(20, "Description should be at least 20 characters."),
+  description: optionalDescriptionSchema,
   status: z.enum(["draft", "published"]).optional().default("draft"),
 });
 
@@ -44,7 +50,7 @@ const publishPayloadSchema = z.object({
 const jobsListQuerySchema = z.object({
   search: z.string().trim().max(200).optional(),
   status: jobStatusSchema.optional(),
-  type: jobTypeSchema.optional(),
+  type: z.string().trim().max(80).optional(),
   country: z.string().trim().max(80).optional(),
   location: z.string().trim().max(160).optional(),
   department: z.string().trim().max(80).optional(),

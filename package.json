@@ -8,7 +8,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "migrate": "node ./scripts/run-migrations.mjs"
+    "migrate": "node ./scripts/run-migrations.mjs",
+    "test:e2e": "tsx --test tests/e2e/**/*.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1023.0",
@@ -17,6 +18,7 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
+    "multer": "^2.1.1",
     "pg": "^8.13.1",
     "zod": "^4.3.6"
   },
@@ -24,6 +26,7 @@
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
     "@types/jsonwebtoken": "^9.0.8",
+    "@types/multer": "^2.1.0",
     "@types/node": "^22.10.2",
     "@types/pg": "^8.11.11",
     "tsx": "^4.19.2",

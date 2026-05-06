@@ -1,5 +1,14 @@
-import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { createReadStream } from "node:fs";
+import { access, mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { Readable } from "node:stream";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 
@@ -9,6 +18,7 @@ import { AppError } from "../lib/app-error.js";
 const DEFAULT_PRESIGNED_UPLOAD_TTL_SECONDS = 900;
 const MAX_PRESIGNED_UPLOAD_TTL_SECONDS = 60 * 60;
 const R2_REGION = "auto";
+const testStorageRootDir = path.resolve(process.cwd(), ".test-r2-storage");
 
 export type R2StorageConfig = {
   accountId: string;
@@ -25,10 +35,18 @@ export type PresignedR2UploadInput = {
   expiresInSeconds?: number;
 };
 
+export type PutR2ObjectInput = {
+  objectKey: string;
+  contentType: string;
+  body: Buffer;
+  cacheControl?: string;
+};
+
 export type R2ObjectResult = {
   body: Readable;
   contentType: string | null;
   contentLength: number | null;
+  cacheControl: string | null;
 };
 
 let r2Client: S3Client | null = null;
@@ -80,6 +98,87 @@ function normalizePresignedUploadExpiresInSeconds(value?: number) {
   return Math.min(normalized, MAX_PRESIGNED_UPLOAD_TTL_SECONDS);
 }
 
+function normalizeObjectKey(objectKey: string) {
+  const normalized = objectKey
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .replace(/\/{2,}/g, "/");
+
+  if (!normalized) {
+    throw new AppError(400, "Media object key is required.");
+  }
+
+  const segments = normalized.split("/");
+
+  if (segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")) {
+    throw new AppError(400, "Media object key is invalid.");
+  }
+
+  return normalized;
+}
+
+function isTestObjectStorageEnabled() {
+  return env.NODE_ENV === "test";
+}
+
+function resolveTestStoragePaths(objectKey: string) {
+  const normalizedObjectKey = normalizeObjectKey(objectKey);
+  const filePath = path.resolve(testStorageRootDir, normalizedObjectKey);
+  const relativePath = path.relative(testStorageRootDir, filePath);
+
+  if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    throw new AppError(400, "Media object key is invalid.");
+  }
+
+  return {
+    normalizedObjectKey,
+    filePath,
+    metadataPath: `${filePath}.meta.json`,
+  };
+}
+
+async function readTestObjectMetadata(metadataPath: string) {
+  try {
+    const raw = await readFile(metadataPath, "utf8");
+    const parsed = JSON.parse(raw) as Partial<{
+      contentType: unknown;
+      cacheControl: unknown;
+    }>;
+
+    return {
+      contentType: typeof parsed.contentType === "string" ? parsed.contentType : null,
+      cacheControl: typeof parsed.cacheControl === "string" ? parsed.cacheControl : null,
+    };
+  } catch {
+    return {
+      contentType: null,
+      cacheControl: null,
+    };
+  }
+}
+
+async function writeTestObjectMetadata(
+  metadataPath: string,
+  metadata: {
+    contentType: string;
+    cacheControl: string | null;
+  },
+) {
+  await writeFile(
+    metadataPath,
+    JSON.stringify(
+      {
+        contentType: metadata.contentType,
+        cacheControl: metadata.cacheControl,
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+}
+
 function toNodeReadable(body: unknown) {
   if (body instanceof Readable) {
     return body;
@@ -122,6 +221,16 @@ export function isR2Configured() {
   );
 }
 
+export function hasManagedMediaStorage() {
+  return isR2Configured() || isTestObjectStorageEnabled();
+}
+
+export function assertManagedMediaStorageConfigured(message = "Cloudflare R2 media storage is not configured.") {
+  if (!hasManagedMediaStorage()) {
+    throw new AppError(500, message);
+  }
+}
+
 export function buildR2PublicUrl(objectKey: string) {
   const { publicBaseUrl } = getR2StorageConfig();
 
@@ -156,10 +265,11 @@ function getR2Client() {
 }
 
 export async function createPresignedR2UploadUrl(input: PresignedR2UploadInput) {
+  const normalizedObjectKey = normalizeObjectKey(input.objectKey);
   const storageConfig = getR2StorageConfig();
   const command = new PutObjectCommand({
     Bucket: storageConfig.bucketName,
-    Key: input.objectKey,
+    Key: normalizedObjectKey,
     ContentType: input.contentType,
   });
 
@@ -168,14 +278,67 @@ export async function createPresignedR2UploadUrl(input: PresignedR2UploadInput) 
   });
 }
 
+export async function putR2Object(input: PutR2ObjectInput) {
+  const normalizedObjectKey = normalizeObjectKey(input.objectKey);
+
+  if (isR2Configured()) {
+    const storageConfig = getR2StorageConfig();
+
+    try {
+      await getR2Client().send(
+        new PutObjectCommand({
+          Bucket: storageConfig.bucketName,
+          Key: normalizedObjectKey,
+          ContentType: input.contentType,
+          CacheControl: input.cacheControl,
+          Body: input.body,
+        }),
+      );
+
+      return;
+    } catch {
+      throw new AppError(500, "Unable to store media object in R2.");
+    }
+  }
+
+  if (!isTestObjectStorageEnabled()) {
+    throw new AppError(500, "Cloudflare R2 media storage is not configured.");
+  }
+
+  const { filePath, metadataPath } = resolveTestStoragePaths(normalizedObjectKey);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, input.body);
+  await writeTestObjectMetadata(metadataPath, {
+    contentType: input.contentType,
+    cacheControl: input.cacheControl ?? null,
+  });
+}
+
 export async function r2ObjectExists(objectKey: string) {
+  const normalizedObjectKey = normalizeObjectKey(objectKey);
+
+  if (!isR2Configured()) {
+    if (!isTestObjectStorageEnabled()) {
+      throw new AppError(500, "Cloudflare R2 media storage is not configured.");
+    }
+
+    const { filePath } = resolveTestStoragePaths(normalizedObjectKey);
+
+    try {
+      await access(filePath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   const storageConfig = getR2StorageConfig();
 
   try {
     await getR2Client().send(
       new HeadObjectCommand({
         Bucket: storageConfig.bucketName,
-        Key: objectKey,
+        Key: normalizedObjectKey,
       }),
     );
 
@@ -190,13 +353,37 @@ export async function r2ObjectExists(objectKey: string) {
 }
 
 export async function getR2Object(objectKey: string): Promise<R2ObjectResult | null> {
+  const normalizedObjectKey = normalizeObjectKey(objectKey);
+
+  if (!isR2Configured()) {
+    if (!isTestObjectStorageEnabled()) {
+      throw new AppError(500, "Cloudflare R2 media storage is not configured.");
+    }
+
+    const { filePath, metadataPath } = resolveTestStoragePaths(normalizedObjectKey);
+
+    try {
+      const fileInfo = await stat(filePath);
+      const metadata = await readTestObjectMetadata(metadataPath);
+
+      return {
+        body: createReadStream(filePath),
+        contentType: metadata.contentType,
+        contentLength: fileInfo.size,
+        cacheControl: metadata.cacheControl,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   const storageConfig = getR2StorageConfig();
 
   try {
     const result = await getR2Client().send(
       new GetObjectCommand({
         Bucket: storageConfig.bucketName,
-        Key: objectKey,
+        Key: normalizedObjectKey,
       }),
     );
 
@@ -208,6 +395,7 @@ export async function getR2Object(objectKey: string): Promise<R2ObjectResult | n
       body: toNodeReadable(result.Body),
       contentType: result.ContentType ?? null,
       contentLength: typeof result.ContentLength === "number" ? result.ContentLength : null,
+      cacheControl: result.CacheControl ?? null,
     };
   } catch (error) {
     if (isNotFoundError(error)) {
@@ -220,4 +408,40 @@ export async function getR2Object(objectKey: string): Promise<R2ObjectResult | n
 
     throw new AppError(500, "Unable to load resume object.");
   }
+}
+
+export async function deleteR2Object(objectKey: string) {
+  const normalizedObjectKey = normalizeObjectKey(objectKey);
+
+  if (isR2Configured()) {
+    const storageConfig = getR2StorageConfig();
+
+    try {
+      await getR2Client().send(
+        new DeleteObjectCommand({
+          Bucket: storageConfig.bucketName,
+          Key: normalizedObjectKey,
+        }),
+      );
+      return;
+    } catch {
+      throw new AppError(500, "Unable to delete stored media object.");
+    }
+  }
+
+  if (!isTestObjectStorageEnabled()) {
+    throw new AppError(500, "Cloudflare R2 media storage is not configured.");
+  }
+
+  const { filePath, metadataPath } = resolveTestStoragePaths(normalizedObjectKey);
+
+  await Promise.all(
+    [filePath, metadataPath].map(async (targetPath) => {
+      try {
+        await unlink(targetPath);
+      } catch {
+        // Ignore missing files during cleanup.
+      }
+    }),
+  );
 }

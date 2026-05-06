@@ -46,6 +46,11 @@ const talentProfileSchema = z.object({
   resumeCtaLabel: optionalTrimmedString(120),
 });
 
+const notificationTemplateMappingsSchema = z.object({
+  contactSubmissionAcknowledgementTemplateId: optionalTrimmedString(120),
+  jobApplicationAcknowledgementTemplateId: optionalTrimmedString(120),
+});
+
 const siteSettingsUpdateSchema = z
   .object({
     companyName: optionalTrimmedString(300),
@@ -67,6 +72,7 @@ const siteSettingsUpdateSchema = z
     notificationEmailProvider: optionalTrimmedString(160),
     notificationEmailApiKey: optionalTrimmedString(2_000),
     notificationFromEmail: optionalTrimmedString(320),
+    notificationTemplateMappings: notificationTemplateMappingsSchema.optional(),
   })
   .refine((value) => Object.values(value).some((item) => item !== undefined), {
     message: "At least one setting is required.",
@@ -124,6 +130,22 @@ function normalizeTalentProfiles(
     avatar: normalizeText(item.avatar),
     resumeCtaLabel: normalizeText(item.resumeCtaLabel),
   }));
+}
+
+function normalizeNotificationTemplateMappings(
+  value:
+    | {
+        contactSubmissionAcknowledgementTemplateId?: string | undefined;
+        jobApplicationAcknowledgementTemplateId?: string | undefined;
+      }
+    | undefined,
+) {
+  return {
+    contactSubmissionAcknowledgementTemplateId: normalizeText(
+      value?.contactSubmissionAcknowledgementTemplateId,
+    ),
+    jobApplicationAcknowledgementTemplateId: normalizeText(value?.jobApplicationAcknowledgementTemplateId),
+  };
 }
 
 function toPublicSiteSettings(settings: Awaited<ReturnType<typeof readSiteSettings>>) {
@@ -194,6 +216,10 @@ siteSettingsRoutes.put(
         typeof parsed.data.talentProfiles === "undefined"
           ? current.talentProfiles
           : normalizeTalentProfiles(parsed.data.talentProfiles),
+      notificationTemplateMappings:
+        typeof parsed.data.notificationTemplateMappings === "undefined"
+          ? current.notificationTemplateMappings
+          : normalizeNotificationTemplateMappings(parsed.data.notificationTemplateMappings),
     };
 
     await writeSiteSettings(next);

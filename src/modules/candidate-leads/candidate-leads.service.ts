@@ -1,8 +1,11 @@
 import {
+  assertManagedMediaStorageConfigured,
   createPresignedR2UploadUrl,
   getR2Object,
   isR2Configured,
+  putR2Object,
   r2ObjectExists,
+  type R2ObjectResult,
 } from "../../services/r2-storage.service.js";
 import { AppError } from "../../lib/app-error.js";
 
@@ -13,17 +16,15 @@ import {
   markCandidateLeadAsReadRepository,
 } from "./candidate-leads.repository.js";
 import {
-  candidateLeadLocalResumeExists,
   createCandidateLeadFallbackRecord,
   getCandidateLeadFallbackRecordById,
-  getCandidateLeadLocalResumeObject,
   listCandidateLeadFallbackRecords,
   markCandidateLeadFallbackRecordAsRead,
-  saveCandidateLeadLocalResumeUpload,
-  type CandidateLeadStoredResumeObject,
 } from "./candidate-leads.fallback-store.js";
 import {
   buildCandidateLeadResumeObjectKey,
+  candidateLeadResumeMaxSizeInBytes,
+  inferCandidateLeadResumeContentType,
   parseCandidateLeadResumeObjectKey,
   type CandidateLeadRecord,
   type CandidateLeadResumeUploadInput,
@@ -42,7 +43,7 @@ function toNullableText(value: string) {
 
 export type CandidateLeadResumeAccessResult = {
   lead: CandidateLeadRecord;
-  object: CandidateLeadStoredResumeObject;
+  object: R2ObjectResult;
 };
 
 function isFallbackablePersistenceError(error: unknown) {
@@ -125,6 +126,10 @@ export async function createCandidateLeadUploadUrlService(input: CandidateLeadRe
   });
 
   if (!isR2Configured()) {
+    if (process.env.NODE_ENV !== "test") {
+      throw new AppError(500, "Cloudflare R2 is not configured for candidate resume uploads.");
+    }
+
     return {
       uploadUrl: `/api/v1/candidate-leads/upload?objectKey=${encodeURIComponent(objectKey)}`,
       objectKey,
@@ -142,12 +147,43 @@ export async function createCandidateLeadUploadUrlService(input: CandidateLeadRe
   };
 }
 
-export async function uploadCandidateLeadResumeLocallyService(input: {
+export async function uploadCandidateLeadResumeService(input: {
   objectKey: string;
   contentType: string;
   body: Buffer;
 }) {
-  return saveCandidateLeadLocalResumeUpload(input);
+  assertManagedMediaStorageConfigured("Cloudflare R2 is not configured for candidate resume uploads.");
+
+  const parsedObjectKey = parseCandidateLeadResumeObjectKey(input.objectKey);
+
+  if (!parsedObjectKey) {
+    throw new AppError(400, "Resume object key must match the candidate lead upload path pattern.");
+  }
+
+  if (!Buffer.isBuffer(input.body) || input.body.byteLength === 0) {
+    throw new AppError(400, "Resume file body is required.");
+  }
+
+  if (input.body.byteLength > candidateLeadResumeMaxSizeInBytes) {
+    throw new AppError(400, "Resume file exceeds the maximum allowed size.");
+  }
+
+  const contentType = inferCandidateLeadResumeContentType(parsedObjectKey.storedFileName, input.contentType);
+
+  if (!contentType) {
+    throw new AppError(400, "Resume file type is not supported. Please upload a PDF, DOC, or DOCX file.");
+  }
+
+  await putR2Object({
+    objectKey: parsedObjectKey.objectKey,
+    contentType,
+    body: input.body,
+    cacheControl: "private, max-age=0, no-store",
+  });
+
+  return {
+    objectKey: parsedObjectKey.objectKey,
+  };
 }
 
 export async function createCandidateLeadService(input: CreateCandidateLeadInput) {
@@ -158,10 +194,9 @@ export async function createCandidateLeadService(input: CreateCandidateLeadInput
   }
 
   if (input.resume) {
-    const hasLocalResume = await candidateLeadLocalResumeExists(input.resume.objectKey);
-    const hasR2Resume = !hasLocalResume && isR2Configured() ? await r2ObjectExists(input.resume.objectKey) : false;
+    const hasStoredResume = await r2ObjectExists(input.resume.objectKey);
 
-    if (!hasLocalResume && !hasR2Resume) {
+    if (!hasStoredResume) {
       throw new AppError(400, "Uploaded resume object not found. Upload the file before creating the candidate lead.");
     }
   }
@@ -239,16 +274,7 @@ export async function getCandidateLeadResumeByIdService(id: string): Promise<Can
     throw new AppError(404, "Candidate lead has no resume.");
   }
 
-  const localObject = await getCandidateLeadLocalResumeObject(lead.resume.objectKey);
-
-  if (localObject) {
-    return {
-      lead,
-      object: localObject,
-    };
-  }
-
-  const object = isR2Configured() ? await getR2Object(lead.resume.objectKey) : null;
+  const object = await getR2Object(lead.resume.objectKey);
 
   if (!object) {
     throw new AppError(404, "Resume object not found.");

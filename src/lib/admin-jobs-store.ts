@@ -8,7 +8,7 @@ import {
   writeJsonFile,
 } from "./shared-admin-files.js";
 
-export type AdminJobType = "full-time" | "part-time" | "contract";
+export type AdminJobType = string;
 export type AdminJobStatus = "draft" | "published" | "closed";
 
 export type AdminJobRecord = {
@@ -111,11 +111,28 @@ const storageFileName = "jobs.json";
 let jobsSeedAttempted = false;
 
 function normalizeJobType(value: unknown): AdminJobType {
-  if (value === "full-time" || value === "part-time" || value === "contract") {
-    return value;
+  const normalized = trimToString(value);
+  return normalized || "full-time";
+}
+
+function formatJobTypeLabel(value: string) {
+  if (value === "full-time") {
+    return "Full-time";
   }
 
-  return "full-time";
+  if (value === "part-time") {
+    return "Part-time";
+  }
+
+  if (value === "contract") {
+    return "Contract";
+  }
+
+  return value
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
 }
 
 function normalizeJobStatus(value: unknown): AdminJobStatus {
@@ -163,7 +180,7 @@ function normalizeRecord(value: unknown): AdminJobRecord | null {
   const description = trimToString(item.description);
   const experience = trimToString(item.experience);
 
-  if (!id || !title || !department || !country || !city || !location || !description || !experience) {
+  if (!id || !title || !department || !country || !city || !location || !experience) {
     return null;
   }
 
@@ -402,7 +419,7 @@ function summarizeJobs(items: AdminJobRecord[]): AdminJobsMetadata {
   const countries = createMetadataBucketMap();
   const locations = createMetadataBucketMap();
   const skills = createMetadataBucketMap();
-  const jobTypes = new Map<AdminJobType, AdminJobsTypeMetadata>();
+  const jobTypes = new Map<string, AdminJobsTypeMetadata>();
   let publishedJobs = 0;
   let draftJobs = 0;
   let closedJobs = 0;
@@ -431,7 +448,7 @@ function summarizeJobs(items: AdminJobRecord[]): AdminJobsMetadata {
 
     const currentType = jobTypes.get(item.type) ?? {
       type: item.type,
-      label: item.type === "full-time" ? "Full-time" : item.type === "part-time" ? "Part-time" : "Contract",
+      label: formatJobTypeLabel(item.type),
       total: 0,
       published: 0,
       draft: 0,

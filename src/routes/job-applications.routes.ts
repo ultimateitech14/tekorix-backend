@@ -1,9 +1,11 @@
-import { readFile } from "fs/promises";
+import { pipeline } from "node:stream/promises";
 
 import { Router } from "express";
+import multer from "multer";
 import { z } from "zod";
 
 import {
+  createJobApplication,
   deleteAllJobApplications,
   deleteJobApplicationById,
   getJobApplicationById,
@@ -11,6 +13,7 @@ import {
   markAllJobApplicationsAsRead,
   markJobApplicationAsRead,
   readJobApplications,
+  saveJobApplicationResumeUpload,
   updateJobApplicationAdminNotes,
   updateJobApplicationStatus,
   type JobApplicationStatus,
@@ -23,12 +26,40 @@ import {
 import { asyncHandler } from "../lib/async-handler.js";
 import { sendError, sendSuccess } from "../lib/api-response.js";
 import { AppError } from "../lib/app-error.js";
-import { createAdminAuditEntry } from "../lib/shared-admin-store.js";
+import { createAdminAuditEntry, readSiteSettings } from "../lib/shared-admin-store.js";
 import { requireAdminAuth } from "../middleware/auth.middleware.js";
+import { env } from "../config/env.js";
+import { sendTemplateDrivenEmail } from "../services/admin-template-email.service.js";
 
 const jobApplicationsRoutes = Router();
+const publicJobApplicationUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024,
+  },
+});
 
 const jobApplicationStatusSchema = z.enum(["pending review", "shortlisted", "rejected", "interview"]);
+const publicJobApplicationSchema = z.object({
+  jobId: z.string().trim().min(1, "Invalid job reference."),
+  jobTitle: z.string().trim().min(2, "Job title is required.").max(160, "Job title is too long."),
+  jobLocation: z.string().trim().min(2, "Job location is required.").max(160, "Job location is too long."),
+  fullName: z.string().trim().min(2, "Full name is required.").max(90, "Full name is too long."),
+  email: z.string().trim().email("Please enter a valid email address."),
+  phone: z.string().trim().min(8, "Phone number is required.").max(20, "Phone number is too long."),
+  location: z.string().trim().min(2, "Current location is required.").max(160, "Current location is too long."),
+  experience: z.string().trim().min(1, "Experience is required.").max(160, "Experience is too long."),
+  coverLetter: z.string().trim().min(2, "Key skills are required.").max(300, "Key skills are too long."),
+});
+
+const allowedResumeMimeTypes = new Set([
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/x-msword",
+]);
+
+const allowedResumeExtensions = new Set([".pdf", ".doc", ".docx"]);
 
 function parseScope(value: unknown) {
   return value === "candidates" ? "candidates" : "applications";
@@ -46,6 +77,13 @@ function sanitizeDownloadName(value: string) {
   return value.replace(/[^A-Za-z0-9._-]/g, "_");
 }
 
+function isSupportedResumeUpload(file: Express.Multer.File) {
+  const normalizedMimeType = file.mimetype.trim().toLowerCase();
+  const extension = file.originalname.toLowerCase().slice(file.originalname.lastIndexOf("."));
+
+  return allowedResumeMimeTypes.has(normalizedMimeType) || allowedResumeExtensions.has(extension);
+}
+
 function formatStatusLabel(status: JobApplicationStatus) {
   if (status === "pending review") {
     return "Pending Review";
@@ -61,6 +99,77 @@ function formatStatusLabel(status: JobApplicationStatus) {
 
   return "Interview";
 }
+
+jobApplicationsRoutes.post(
+  "/api/v1/job-applications",
+  publicJobApplicationUpload.single("resume"),
+  asyncHandler(async (request, response) => {
+    const parsed = publicJobApplicationSchema.safeParse(request.body);
+
+    if (!parsed.success) {
+      throw new AppError(400, parsed.error.issues[0]?.message ?? "Invalid request payload.");
+    }
+
+    const resumeFile = request.file;
+
+    if (!resumeFile || resumeFile.size <= 0) {
+      throw new AppError(400, "Resume file is required.");
+    }
+
+    if (!isSupportedResumeUpload(resumeFile)) {
+      throw new AppError(400, "Resume file type is not supported. Please upload a PDF, DOC, or DOCX file.");
+    }
+
+    const resume = await saveJobApplicationResumeUpload({
+      originalName: resumeFile.originalname,
+      contentType: resumeFile.mimetype,
+      buffer: resumeFile.buffer,
+    });
+    const created = await createJobApplication({
+      ...parsed.data,
+      resume,
+    });
+    try {
+      const settings = await readSiteSettings();
+      const fromEmail = settings.notificationFromEmail.trim() || settings.companyEmail.trim() || env.ADMIN_EMAIL;
+      const autoReply = await sendTemplateDrivenEmail({
+        templateId: settings.notificationTemplateMappings.jobApplicationAcknowledgementTemplateId,
+        settings,
+        toEmail: created.email,
+        fromEmail,
+        replacements: {
+          candidate_name: created.fullName,
+          full_name: created.fullName,
+          first_name: created.fullName.split(" ")[0] ?? created.fullName,
+          job_title: created.jobTitle,
+          job_location: created.jobLocation,
+          company_name: settings.companyName,
+          company_email: settings.companyEmail,
+          recruiter_name: env.ADMIN_NAME?.trim() || `${settings.companyName} Team`.trim(),
+        },
+      });
+
+      if (!autoReply.skipped) {
+        await createAdminAuditEntry({
+          category: "notification",
+          module: "Email & Notifications",
+          action: autoReply.sent ? "Sent Job Application Auto Reply" : "Failed Job Application Auto Reply",
+          target: `${created.id} - ${autoReply.template.id} -> ${created.email} -> ${autoReply.sent ? "sent" : "failed"}`,
+        });
+      }
+    } catch {
+      // Do not block public form submissions if the acknowledgement email fails unexpectedly.
+    }
+
+    sendSuccess(response, {
+      status: 201,
+      message: "Application submitted successfully.",
+      data: {
+        id: created.id,
+      },
+    });
+  }),
+);
 
 jobApplicationsRoutes.get(
   "/api/admin/job-applications",
@@ -324,14 +433,20 @@ jobApplicationsRoutes.get(
       // Do not block download if resume bank sync fails.
     }
 
-    const file = await readFile(result.absolutePath);
-    const contentType = result.application.resume.contentType || "application/octet-stream";
+    const contentType =
+      result.application.resume.contentType || result.object.contentType || "application/octet-stream";
     const fileName = sanitizeDownloadName(result.application.resume.originalName);
 
     response.setHeader("Content-Type", contentType);
     response.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
     response.setHeader("Cache-Control", "no-store, max-age=0");
-    response.status(200).send(file);
+
+    if (typeof result.object.contentLength === "number" && Number.isFinite(result.object.contentLength)) {
+      response.setHeader("Content-Length", String(result.object.contentLength));
+    }
+
+    response.status(200);
+    await pipeline(result.object.body, response);
   }),
 );
 

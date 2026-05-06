@@ -10,7 +10,7 @@ import {
   getCandidateLeadByIdService,
   listCandidateLeadsService,
   markCandidateLeadAsReadService,
-  uploadCandidateLeadResumeLocallyService,
+  uploadCandidateLeadResumeService,
 } from "./candidate-leads.service.js";
 import {
   candidateLeadIdParamsSchema,
@@ -95,7 +95,7 @@ export const uploadCandidateLeadResumeController: RequestHandler = async (reques
   const contentType = request.header("Content-Type") ?? "";
   const body = Buffer.isBuffer(request.body) ? request.body : Buffer.alloc(0);
 
-  await uploadCandidateLeadResumeLocallyService({
+  await uploadCandidateLeadResumeService({
     objectKey,
     contentType,
     body,
