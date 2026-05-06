@@ -14,7 +14,7 @@ if (!databaseUrl) {
   throw new Error("DATABASE_URL is not configured.");
 }
 
-const migrationsDir = path.resolve(process.cwd(), "backend/migrations");
+const migrationsDir = path.resolve(process.cwd(), "migrations");
 const client = new Client({
   connectionString: databaseUrl,
   ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : false,
