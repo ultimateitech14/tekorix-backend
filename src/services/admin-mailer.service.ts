@@ -1,6 +1,3 @@
-import path from "path";
-import { pathToFileURL } from "url";
-
 import type { SiteSettingsRecord } from "../lib/shared-admin-store.js";
 
 type SendAdminEmailInput = {
@@ -178,19 +175,9 @@ function buildTransportFromSettings(input: SendAdminEmailInput): MailerTransport
 }
 
 async function loadNodemailerRuntime() {
-  const nodemailerPath = path.resolve(
-    process.cwd(),
-    "..",
-    "..",
-    "frontend",
-    "node_modules",
-    "nodemailer",
-    "lib",
-    "nodemailer.js",
-  );
-
   try {
-    const runtime = (await import(pathToFileURL(nodemailerPath).href)) as {
+    const moduleName = "nodemailer";
+    const runtime = (await import(moduleName)) as {
       default?: NodemailerRuntime;
       createTransport?: NodemailerRuntime["createTransport"];
     };
